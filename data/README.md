@@ -20,3 +20,5 @@ Lyme disease is monitored in England and Wales through routine surveillance. The
 | Mean Precipitation |  ERA5-Land  | 9 km | Yearly| https://doi.org/10.5194/essd-13-4349-2021 |
 | England Parks |  Natural England  | | | https://naturalengland-defra.opendata.arcgis.com/search?collection=Dataset&q=parks |
 | Access to natural spaces |  Natural England  | | | https://naturalengland-defra.opendata.arcgis.com/datasets/3b9e9bff7edb4cb395860ea8e53cea82_0/explore?location=52.692906%2C-2.168824%2C6.65 |
+
+OSF repo with larger data files: [https://osf.io/m967c/](https://osf.io/m967c/)
