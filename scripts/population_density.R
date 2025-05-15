@@ -1,8 +1,9 @@
-###
-# ONS population data
-###
 
+# Load packages -----------------------------------------------------------
 pacman::p_load(onsr, tidyverse, disaggregation, terra, tidyterra, here, cowplot)
+
+
+# Load data ---------------------------------------------------------------
 
 # Lyme data
 data <- read_csv(here("data", "FULL-UKHSA-2017-2022-Lyme-Disease.csv"))
@@ -17,6 +18,9 @@ lad <- vect(here("large-data", "LAD_DEC_24_UK_BFC.shp")) %>%
   simplifyGeom(tolerance = 20)
 
 writeVector(lad, here("data", "reduced_LAD_boundaries.rds"))
+
+
+# Process data for summaries ----------------------------------------------
 
 # County lyme data
 data_subset <- data %>%
@@ -68,7 +72,9 @@ for (p in periods[1:6]) {
 
 plot_grid(plotlist = lad_plots)
 
-# Higher resolution pop raster match to the county polygons
+
+# Correct the GPW4 data to more closely match observed populations --------
+
 lad_extent <- ext(lad)
 
 lad_extent_gpw4_crs <- project(lad, crs(gpw4))
@@ -77,48 +83,65 @@ gpw4_crop <- crop(gpw4, lad_extent_gpw4_crs)
 
 gpw4_crop_proj <- project(gpw4_crop, crs(lad))
 
-lad_pop <- extract(gpw4_crop_proj, lad, fun = sum, na.rm = TRUE) %>%
-  mutate(LAD24CD = lad$LAD24CD)
+lad_pop <- extract(gpw4_crop_proj, lad, fun = sum, na.rm = TRUE, bind = TRUE) %>%
+  as_tibble() %>%
+  select(LAD24CD, GPW4) 
 
-compare_to_data <- data_subset %>%
-  left_join(lad_pop, by = c(`Area Code` = "LAD24CD")) %>%
-  ggplot(aes(x = Denominator, y = GPW4)) +
-  geom_point() +
-  geom_abline(slope = 1, intercept = 0, colour = "red", linetype = "dashed") +  
-  coord_fixed(ratio = 1, xlim = c(0, 2000000), ylim = c(0, 2000000)) +          
-  labs(x = "Data Denominator", y = "GPW4 Population Estimate",
-       title = "Comparison of LAD Population Totals: GPW4 vs Provided Data") +
-  theme_minimal()
-
-# regression based adjustment of GPW4 data
 lad_compare <- data_subset %>%
+  rename(obs_pop = Denominator) %>%
   left_join(lad_pop, by = c("Area Code" = "LAD24CD")) %>%
-  rename(obs_pop = Denominator, gpw4_pop = GPW4)
+  mutate(scaling_factor = obs_pop / GPW4)
 
-lm_fit <- lm(obs_pop ~ gpw4_pop, data = lad_compare)
-summary(lm_fit)
+lad_sf <- lad %>%
+  left_join(lad_compare %>% select(LAD24CD = `Area Code`, scaling_factor), by = "LAD24CD")
 
-beta0 <- coef(lm_fit)[1]
-beta1 <- coef(lm_fit)[2]
+scaling_raster <- rasterize(lad_sf, gpw4_crop_proj, field = "scaling_factor")
 
-gpw4_corrected <- beta0 + beta1 * gpw4_crop_proj
-names(gpw4_corrected) <- "gpw4_corrected"
+gpw4_adjusted <- gpw4_crop_proj * scaling_raster
 
-lad_pop_corrected <- extract(gpw4_corrected, lad, fun = sum, na.rm = TRUE) %>%
-  mutate(LAD24CD = lad$LAD24CD)
+plot(crop(gpw4_adjusted, lad))
 
-lad_compare <- lad_compare %>%
-  select(-ID) %>%
-  left_join(lad_pop_corrected, by = c("Area Code" = "LAD24CD"))
+# Compare GPW4 now to observed data
+lad_pop_adjusted <- extract(gpw4_adjusted, lad, fun = sum, na.rm = TRUE, bind = TRUE) %>%
+  as_tibble() %>%
+  select(LAD24CD, GPW4)
 
-lm_fit <- lm(obs_pop ~ gpw4_corrected, data = lad_compare)
-summary(lm_fit)
+lad_compare_models <- data_subset %>%
+  select(`Area Code`, Denominator) %>%
+  rename(obs_pop = Denominator) %>%
+  left_join(lad_pop %>%
+              rename(GPW4_original = GPW4), by = c("Area Code" = "LAD24CD")) %>%
+  left_join(lad_pop_adjusted %>%
+              rename(GPW4_scaled = GPW4), by = c("Area Code" = "LAD24CD"))
 
-# Plot updated comparison
-ggplot(lad_compare, aes(x = obs_pop, y = gpw4_corrected)) +
-  geom_point() +
-  geom_abline(slope = 1, intercept = 0, colour = "red", linetype = "dashed") +
-  coord_fixed(ratio = 1, xlim = c(0, 2000000), ylim = c(0, 2000000)) +
-  labs(x = "Census Population", y = "Corrected GPW4 Population",
-       title = "Post-Adjustment Comparison: GPW4 vs Census") +
+model_original <- lm(obs_pop ~ GPW4_original, data = lad_compare_models)
+model_adjusted <- lm(obs_pop ~ GPW4_scaled, data = lad_compare_models)
+
+r2_original <- summary(model_original)$r.squared
+r2_adjusted <- summary(model_adjusted)$r.squared
+
+plot_original <- ggplot(lad_compare_models, aes(x = GPW4_original, y = obs_pop)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, colour = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "red") +
+  labs(title = "Original GPW4 vs Observed",
+       subtitle = paste0("R² = ", round(r2_original, 3)),
+       x = "GPW4 Population (Original)",
+       y = "Observed Population") +
+  coord_fixed() +
   theme_minimal()
+
+plot_adjusted <- ggplot(lad_compare_models, aes(x = GPW4_scaled, y = obs_pop)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, colour = "darkgreen") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "red") +
+  labs(title = "Adjusted GPW4 vs Observed",
+       subtitle = paste0("R² = ", round(r2_adjusted, 3)),
+       x = "GPW4 Population (Adjusted)",
+       y = "Observed Population") +
+  coord_fixed() +
+  theme_minimal()
+
+plot_grid(plotlist = list(plot_original, plot_adjusted))
+
+writeRaster(gpw4_adjusted, here("data", "gpw4_adjusted_raster.tiff"))
